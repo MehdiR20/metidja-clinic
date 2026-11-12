@@ -1,0 +1,203 @@
+// Clinique Metidja — data model
+// Localised content (names, bios, descriptions) is stored as JSON: { "fr": "...", "ar": "...", "en": "..." }
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  PATIENT
+  STAFF
+  ADMIN
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum AppointmentType {
+  IN_PERSON
+  TELEHEALTH
+}
+
+enum NotificationChannel {
+  SMS
+  WHATSAPP
+}
+
+enum InquiryType {
+  GENERAL
+  TELEHEALTH
+}
+
+enum InquiryStatus {
+  NEW
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum LabResultStatus {
+  PENDING
+  AVAILABLE
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  phone        String?
+  name         String
+  passwordHash String
+  role         Role     @default(PATIENT)
+  // Law 18-07: explicit, timestamped consent to personal-data processing
+  consentAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  appointments  Appointment[]
+  prescriptions Prescription[]
+  labResults    LabResult[]
+}
+
+model Department {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  name        Json
+  description Json
+  icon        String  @default("stethoscope")
+  order       Int     @default(0)
+  isActive    Boolean @default(true)
+
+  services     Service[]
+  doctors      Doctor[]
+  appointments Appointment[]
+}
+
+model Service {
+  id           String  @id @default(cuid())
+  departmentId String
+  name         Json
+  description  Json?
+  priceDzd     Int
+  durationMin  Int     @default(30)
+  isActive     Boolean @default(true)
+  order        Int     @default(0)
+
+  department   Department    @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@index([departmentId])
+}
+
+model Doctor {
+  id                String   @id @default(cuid())
+  slug              String   @unique
+  name              String
+  title             Json
+  bio               Json
+  qualifications    Json // { fr: string[], ar: string[], en: string[] }
+  languages         String[] // ISO codes: fr, ar, en, kab
+  // [{ "day": 0-6 (0 = Sunday), "start": "08:00", "end": "12:00" }]
+  consultationHours Json
+  slotMinutes       Int      @default(30)
+  consultationFee   Int
+  photoUrl          String?
+  acceptsTelehealth Boolean  @default(false)
+  isActive          Boolean  @default(true)
+  departmentId      String
+  createdAt         DateTime @default(now())
+
+  department    Department     @relation(fields: [departmentId], references: [id])
+  appointments  Appointment[]
+  prescriptions Prescription[]
+
+  @@index([departmentId])
+}
+
+model Appointment {
+  id           String              @id @default(cuid())
+  reference    String              @unique
+  startsAt     DateTime
+  type         AppointmentType     @default(IN_PERSON)
+  status       AppointmentStatus   @default(PENDING)
+  channel      NotificationChannel @default(SMS)
+  patientName  String
+  patientPhone String
+  patientEmail String?
+  reason       String?
+  staffNotes   String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  doctorId     String
+  departmentId String
+  serviceId    String?
+  userId       String?
+
+  doctor     Doctor     @relation(fields: [doctorId], references: [id])
+  department Department @relation(fields: [departmentId], references: [id])
+  service    Service?   @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // A practitioner cannot be double-booked on the same slot
+  @@unique([doctorId, startsAt])
+  @@index([userId])
+  @@index([startsAt])
+}
+
+model Prescription {
+  id       String   @id @default(cuid())
+  issuedAt DateTime @default(now())
+  // [{ "drug": "...", "dosage": "...", "duration": "..." }]
+  items    Json
+  notes    String?
+  userId   String
+  doctorId String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  doctor Doctor @relation(fields: [doctorId], references: [id])
+
+  @@index([userId])
+}
+
+model LabResult {
+  id          String          @id @default(cuid())
+  testName    Json
+  collectedAt DateTime
+  status      LabResultStatus @default(PENDING)
+  // [{ "analyte": "...", "value": "...", "unit": "...", "range": "...", "flag": "normal|high|low" }]
+  results     Json?
+  userId      String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Inquiry {
+  id        String        @id @default(cuid())
+  type      InquiryType   @default(GENERAL)
+  status    InquiryStatus @default(NEW)
+  name      String
+  phone     String
+  email     String?
+  subject   String
+  message   String
+  createdAt DateTime      @default(now())
+}
+
+// Mock outbox for SMS / WhatsApp confirmations (swap for a real provider in lib/notify.ts)
+model NotificationLog {
+  id        String              @id @default(cuid())
+  channel   NotificationChannel
+  to        String
+  body      String
+  createdAt DateTime            @default(now())
+}
